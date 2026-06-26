@@ -1,13 +1,11 @@
-"""Synthetic pathology tile generator, real dataset loader, and PyTorch Dataset."""
+"""Synthetic pathology tile generator, real dataset loader, and optional PyTorch Dataset."""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
-import torch
 from PIL import Image
-from torch.utils.data import Dataset
 
 from src.config import get_config
 
@@ -480,8 +478,8 @@ def load_hf_dataset(
 _SPLIT_NAMES = {"train", "val", "test"}
 
 
-class PathSegDataset(Dataset):
-    """PyTorch Dataset for pathology segmentation.
+class PathSegDataset:
+    """PyTorch-compatible Dataset for pathology segmentation.
 
     Wraps both synthetic and real data with configurable transforms,
     and supports train/val/test splitting by index.
@@ -493,7 +491,6 @@ class PathSegDataset(Dataset):
         ``"masks"`` (N × H × W, uint8 {0, 1}).
     transform : callable, optional
         Callable ``(image, mask) -> (tensor_img, tensor_mask)``.
-        If None, defaults to ``val_transform`` from ``src.transforms``.
     indices : list of int, optional
         Subset of sample indices to use.  If None, all samples are used.
     """
@@ -516,14 +513,14 @@ class PathSegDataset(Dataset):
     def __len__(self) -> int:
         return len(self.images)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
+        import torch  # lazy — only needed when used as a PyTorch Dataset
         image = self.images[idx]
         mask = self.masks[idx]
 
         if self._transform is not None:
             return self._transform(image, mask)
 
-        # Default: simple ToTensor conversion
         img_t = torch.from_numpy(image).float().permute(2, 0, 1) / 255.0
         msk_t = torch.from_numpy(mask).float().unsqueeze(0)
         return img_t, msk_t
@@ -595,7 +592,7 @@ def create_dataloaders(
     batch_size: int = 16,
     val_batch_size: int = 32,
     num_workers: int = 0,
-) -> dict[str, torch.utils.data.DataLoader]:
+) -> dict:
     """Create DataLoaders from a dictionary of Datasets.
 
     Parameters
@@ -614,7 +611,8 @@ def create_dataloaders(
     -------
     dict[str, DataLoader]
     """
-    loaders: dict[str, torch.utils.data.DataLoader] = {}
+    import torch  # lazy — only needed when DataLoaders are actually used
+    loaders: dict = {}
     for split_name, dataset in datasets.items():
         bs = batch_size if split_name == "train" else val_batch_size
         shuffle = split_name == "train"

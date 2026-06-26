@@ -1,15 +1,13 @@
-"""Pixel-level pathology segmentation baseline and UNet inference wrapper."""
+"""Pixel-level pathology segmentation baseline and optional UNet inference wrapper."""
 from __future__ import annotations
 
 import functools
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from src.config import get_config
 from src.core import LogisticRegression, Standardizer, train_test_split
-from src.unet import build_unet_from_config
 
 _MODEL_ROOT = Path(__file__).resolve().parent.parent / "models"
 
@@ -163,7 +161,9 @@ def predict(model: dict, image: np.ndarray) -> np.ndarray:
 def _load_unet_for_inference(
     model_path: str | None = None,
     device: str = "cpu",
-) -> tuple[torch.nn.Module, torch.device]:
+):
+    import torch  # lazy — only needed when UNet inference is requested
+    from src.unet import build_unet_from_config  # noqa: PLC0415
     resolved = model_path if model_path else str(_MODEL_ROOT / "unet_best.pt")
     device_obj = torch.device(device)
     model = build_unet_from_config()
@@ -174,24 +174,24 @@ def _load_unet_for_inference(
     return model, device_obj
 
 
-@torch.no_grad()
 def predict_proba_unet(
     images: np.ndarray,
     model_path: str | None = None,
     device: str = "cpu",
 ) -> np.ndarray:
+    import torch  # lazy — only needed when UNet inference is requested
     images = np.asarray(images, dtype=np.uint8)
     single = images.ndim == 3
     if single:
         images = images[None, ...]
 
     model, device_obj = _load_unet_for_inference(model_path, device)
-    n, h, w, c = images.shape
     tensor = torch.from_numpy(images).float().permute(0, 3, 1, 2) / 255.0
     tensor = tensor.to(device_obj)
 
-    logits = model(tensor)
-    probs = torch.sigmoid(logits).cpu().numpy()
+    with torch.no_grad():
+        logits = model(tensor)
+        probs = torch.sigmoid(logits).cpu().numpy()
 
     maps = probs[:, 0]
     result = maps[0] if single else maps
