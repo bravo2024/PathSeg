@@ -1,4 +1,4 @@
-﻿"""PathSeg — Computational Pathology Segmentation Platform.
+"""PathSeg — Computational Pathology Segmentation Platform.
 
 Interactive dashboard for training, evaluating, and reviewing
 digital pathology tile segmentation models (Baseline & U-Net).
@@ -636,8 +636,8 @@ else:
 # Tabs
 # ---------------------------------------------------------------------------
 
-overview_tab, data_tab, segment_tab, results_tab, modelcard_tab, deploy_tab = st.tabs(
-    ["Overview", "Data", "Segment", "Results", "Model Card", "Deploy"]
+overview_tab, data_tab, segment_tab, results_tab, models_tab = st.tabs(
+    ["Overview", "Data", "Segment", "Results", "Models"]
 )
 
 # ============================================================
@@ -1048,199 +1048,203 @@ with results_tab:
         )
 
 # ============================================================
-# TAB 5 — Model Card
+# TAB 5 — Models (technical)
 # ============================================================
 
-with modelcard_tab:
-    st.markdown('<div class="ps-section">Model Cards</div>', unsafe_allow_html=True)
+FEATURE_NAMES = ["Red", "Green", "Blue", "Brightness", "Purple score", "Saturation", "x (pos)", "y (pos)"]
 
-    st.markdown("Architecture details, training config, and known limitations for each model.")
+with models_tab:
 
-    # --- Baseline card ---
-    with st.container():
-        st.markdown('<div class="ps-card">', unsafe_allow_html=True)
-        st.markdown("### Baseline: Pixel-Level Logistic Regression")
-        st.markdown(
-            '<span class="ps-status"><span class="ps-dot ps-dot-green"></span> Active</span>',
-            unsafe_allow_html=True,
-        )
+    # ── Logistic Regression ──────────────────────────────────
+    st.markdown('<div class="ps-section">Logistic Regression</div>', unsafe_allow_html=True)
 
-        bc1, bc2 = st.columns(2)
-        with bc1:
-            st.markdown(
-                """
-                **Architecture**
-                - Per-pixel binary logistic regression (no spatial context)
-                - Input: 8 hand-crafted features per pixel
-                - Output: Probability of foreground (tissue/tumor)
+    st.latex(
+        r"P(\text{foreground}\mid x) = \sigma(w^\top x + b)"
+        r"= \frac{1}{1 + e^{-(w_0 r + w_1 g + w_2 b + w_3 \text{br} + w_4 \text{pu} + w_5 \text{sat} + w_6 x_c + w_7 y_c + b)}}"
+    )
 
-                **Features** (8 per pixel)
-                - Red, Green, Blue channels (normalized to [0, 1])
-                - Brightness (mean of RGB)
-                - Purple stain score (B + R - 1.35G)
-                - Saturation (max - min of RGB)
-                - Normalized spatial coordinates (x, y)
+    feat_table = pd.DataFrame({
+        "Feature": FEATURE_NAMES,
+        "Formula": [
+            "pixel_R / 255",
+            "pixel_G / 255",
+            "pixel_B / 255",
+            "(R + G + B) / 3",
+            "B + R − 1.35·G",
+            "max(R,G,B) − min(R,G,B)",
+            "col / (W − 1)",
+            "row / (H − 1)",
+        ],
+        "Intuition": [
+            "H&E eosin staining",
+            "Background hue",
+            "H&E hematoxylin staining",
+            "Overall brightness",
+            "Purple/violet nuclear stain",
+            "Color saturation",
+            "Horizontal position",
+            "Vertical position",
+        ],
+    })
+    st.dataframe(feat_table, hide_index=True, use_container_width=True)
 
-                **Training Configuration**
-                - Optimizer: Gradient descent with balanced class weighting
-                - Pixels sampled: 25,000 per run (50% positive, 50% negative)
-                - Learning rate: 0.28 | Epochs: 150 | L2 regularization: 2e-3
-                - Random seed: 11 (for reproducibility)
-                """
-            )
-        with bc2:
-            st.markdown(
-                """
-                **Strengths**
-                - Highly interpretable (per-pixel feature weights)
-                - No GPU required — trains in ~2 seconds on CPU
-                - Fast iteration for metric wiring and pipeline validation
-                - Deterministic given fixed random seed
-                - No hyperparameter tuning required
-
-                **Limitations**
-                - No spatial context (each pixel classified independently)
-                - Poor generalization on heterogeneous tissue architectures
-                - Sensitive to stain variation and color normalization
-                - Cannot learn morphological or textural features
-                - Boundary precision limited by pixel-level independence
-
-                **Good for**
-                - Comparing against deep learning models
-                - Checking color-based separability quickly
-                - Debugging evaluation pipelines
-                """
-            )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # --- U-Net card ---
-    with st.container():
-        st.markdown('<div class="ps-card">', unsafe_allow_html=True)
-        st.markdown("### U-Net: Convolutional Segmentation Network")
-        status_color = "ps-dot-green" if UNET_AVAILABLE else "ps-dot-amber"
-        status_text = "Trained" if UNET_AVAILABLE else "Not trained"
-        st.markdown(
-            f'<span class="ps-status"><span class="ps-dot {status_color}"></span> {status_text}</span>',
-            unsafe_allow_html=True,
-        )
-
-        uc1, uc2 = st.columns(2)
-        with uc1:
-            st.markdown(
-                """
-                **Architecture**
-                - Encoder-decoder with skip connections (U-Net)
-                - Depth: 4 down-sampling / 4 up-sampling stages
-                - Base filters: 64 (doubles at each down stage: 64 > 128 > 256 > 512)
-                - DoubleConv block: Conv2D(3x3) + BatchNorm + ReLU (x2)
-                - MaxPool2d(2) for downsampling, ConvTranspose2d(2x2) for upsampling
-                - Output: 1-channel logit map (sigmoid for probability)
-
-                **Training Configuration**
-                - Loss: BCE + Dice (50/50 weighted average)
-                - Optimizer: AdamW (lr=1e-3, weight_decay=1e-4)
-                - Scheduler: ReduceLROnPlateau (factor=0.5, patience=5)
-                - Early stopping: patience=15 epochs
-                - Batch size: 16 (train), 32 (val/test)
-                - Augmentation: H-flip, V-flip, rotation, elastic transform, color jitter
-                """
-            )
-        with uc2:
-            st.markdown(
-                """
-                **Strengths**
-                - Full-resolution segmentation masks
-                - Captures spatial tissue morphology and context
-                - Skip connections preserve fine spatial details
-                - BatchNorm improves training stability
-                - Combined loss handles class imbalance
-                - Uncertainty quantification via probability maps
-
-                **Limitations**
-                - Requires GPU for reasonable training time
-                - ~31M parameters (large for edge deployment)
-                - Needs real pathology data to demonstrate clinical value
-                - Overfits on small synthetic datasets without augmentation
-                - Inference time ~50ms/tile on GPU, ~2s/tile on CPU
-
-                **Good for**
-                - Real pathology tissue segmentation
-                - When spatial context and morphology matter
-                """
-            )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # --- Current run config ---
-    if baseline_metrics:
-        st.markdown('<div class="ps-section">Current Run Configuration</div>', unsafe_allow_html=True)
-        cfg_rows = [
-            {"Parameter": "Data source", "Value": data.get("source", "synthetic")},
-            {"Parameter": "Training tiles", "Value": f"{baseline_metrics.get('n_train_tiles', '—')}"},
-            {"Parameter": "Test tiles", "Value": f"{baseline_metrics.get('n_test_tiles', '—')}"},
-            {"Parameter": "Decision threshold", "Value": f"{baseline_metrics.get('threshold', threshold):.2f}"},
-            {"Parameter": "Sampled pixels", "Value": f"{baseline_metrics.get('sampled_train_pixels', '—'):,}" if isinstance(baseline_metrics.get('sampled_train_pixels'), int) else "—"},
-            {"Parameter": "Positive pixel rate", "Value": f"{baseline_metrics.get('positive_pixel_rate', 0):.2%}"},
-        ]
-        st.dataframe(pd.DataFrame(cfg_rows), use_container_width=True, hide_index=True)
-
-# ============================================================
-# TAB 6 — Deploy
-# ============================================================
-
-with deploy_tab:
-    st.markdown('<div class="ps-section">Deployment</div>', unsafe_allow_html=True)
-
-    # --- Streamlit Cloud ---
-    st.markdown("#### Streamlit Community Cloud (Recommended for Prototyping)")
+    st.markdown("**Gradient descent update rule** (class-balanced weights, L2 regularization):")
+    st.latex(
+        r"w \;\leftarrow\; w - \eta \!\left(\frac{X^\top [(p - y) \odot s]}{n} + \lambda w\right)"
+        r",\qquad b \;\leftarrow\; b - \eta\,\overline{(p - y) \odot s}"
+    )
     st.markdown(
-        """
-        1. Push the `PathSeg/` folder to a GitHub repository.
-        2. Navigate to [share.streamlit.io](https://share.streamlit.io).
-        3. Create a new app with `app.py` as the main entrypoint.
-        4. Ensure `requirements.txt`, `runtime.txt`, and `.streamlit/config.toml` are present.
-        5. No external dataset download is required — synthetic data generates on startup.
-        """
+        "where **s** is the per-sample class weight (`n / 2·n_pos` for positives, `n / 2·n_neg` for negatives)."
     )
 
-    # --- Manual deployment ---
-    st.markdown("#### Manual / On-Premise Deployment")
-    st.code(
-        "python -m venv .venv\n"
-        "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
-        "pip install -r requirements.txt\n"
-        "python train.py              # train baseline model\n"
-        "python train.py --model unet # (optional) train U-Net\n"
-        "streamlit run app.py --server.port 8502",
-        language="bash",
-    )
+    if baseline_model:
+        clf = baseline_model["clf"]
+        w = clf.w_
+        b_val = clf.b_
 
-    # --- Docker ---
-    st.markdown("#### Docker Deployment")
-    st.code(
-        "FROM python:3.11-slim\n"
-        "WORKDIR /app\n"
-        "COPY requirements.txt .\n"
-        "RUN pip install --no-cache-dir -r requirements.txt\n"
-        "COPY . .\n"
-        "RUN python train.py\n"
-        "EXPOSE 8501\n"
-        "CMD [\"streamlit\", \"run\", \"app.py\", \"--server.port=8501\", \"--server.headless=true\"]",
-        language="dockerfile",
-    )
+        lc1, lc2, lc3 = st.columns(3)
+        lc1.metric("Bias b", f"{b_val:.4f}")
+        lc2.metric("Max weight", f"{w.max():.4f}  ({FEATURE_NAMES[int(w.argmax())]})")
+        lc3.metric("Min weight", f"{w.min():.4f}  ({FEATURE_NAMES[int(w.argmin())]})")
 
-    # --- Environment variables ---
-    st.markdown("#### Environment Variable Overrides")
+        st.markdown("**Learned weights** — positive = pushes toward foreground, negative = toward background:")
+        weight_df = pd.DataFrame({"Weight": w}, index=FEATURE_NAMES).sort_values("Weight")
+        st.bar_chart(weight_df, height=260)
+
+        st.markdown(
+            f"Training config:  lr η = `{clf.lr}` | epochs = `{clf.epochs}` | "
+            f"L2 λ = `{clf.l2}` | pixels sampled = `25 000` (50 % pos / 50 % neg)"
+        )
+    else:
+        st.info("Train the baseline model (select Baseline or Compare in the sidebar) to see learned weights.")
+
+    # ── Threshold & decision boundary ────────────────────────
+    st.markdown('<div class="ps-section">Threshold & Decision Boundary</div>', unsafe_allow_html=True)
+
     st.markdown(
-        """
-        All configuration values can be overridden without editing `config/base.yaml`:
-
-        ```bash
-        export PATHSEG__UNET__EPOCHS=200
-        export PATHSEG__UNET__LEARNING_RATE=0.0005
-        export PATHSEG__DATA__N_SYNTHETIC=300
-        export PATHSEG__BASELINE__THRESHOLD=0.4
-        streamlit run app.py
-        ```
-        """
+        "The raw output is a probability per pixel. "
+        r"A pixel is classified foreground if $p \geq \tau$, background if $p < \tau$."
     )
 
+    if baseline_model:
+        # Collect probabilities + true labels over first N tiles
+        _n_sweep = min(12, len(data["images"]))
+        _all_p, _all_y = [], []
+        for _img, _msk in zip(data["images"][:_n_sweep], data["masks"][:_n_sweep]):
+            _all_p.append(predict_proba(baseline_model, _img).ravel())
+            _all_y.append(_msk.ravel())
+        _all_p = np.concatenate(_all_p)
+        _all_y = np.concatenate(_all_y).astype(bool)
+
+        # Histogram: foreground vs background probabilities
+        _bins = np.linspace(0, 1, 41)
+        _bcenters = (_bins[:-1] + _bins[1:]) / 2
+        _h_pos, _ = np.histogram(_all_p[_all_y], bins=_bins)
+        _h_neg, _ = np.histogram(_all_p[~_all_y], bins=_bins)
+        hist_df = pd.DataFrame(
+            {"Foreground (y=1)": _h_pos, "Background (y=0)": _h_neg},
+            index=np.round(_bcenters, 3),
+        )
+        st.markdown(f"Pixel probability distribution (first {_n_sweep} tiles). Threshold = **{threshold:.2f}**")
+        st.bar_chart(hist_df, height=250)
+        st.caption("Good separation → two distinct peaks. Overlap region = uncertain pixels near boundary.")
+
+        # Threshold sweep
+        _ts = np.linspace(0.05, 0.95, 46)
+        _dice_s, _sens_s, _spec_s = [], [], []
+        for _t in _ts:
+            _pred = _all_p >= _t
+            _tp = int((_all_y & _pred).sum())
+            _fp = int((~_all_y & _pred).sum())
+            _fn = int((_all_y & ~_pred).sum())
+            _tn = int((~_all_y & ~_pred).sum())
+            _dice_s.append(2 * _tp / (2 * _tp + _fp + _fn) if 2 * _tp + _fp + _fn else 0.0)
+            _sens_s.append(_tp / (_tp + _fn) if _tp + _fn else 0.0)
+            _spec_s.append(_tn / (_tn + _fp) if _tn + _fp else 0.0)
+
+        sweep_df = pd.DataFrame(
+            {"Dice": _dice_s, "Sensitivity": _sens_s, "Specificity": _spec_s},
+            index=np.round(_ts, 3),
+        )
+        sweep_df.index.name = "threshold"
+        _best_t = _ts[int(np.argmax(_dice_s))]
+        st.markdown("Dice / Sensitivity / Specificity vs threshold:")
+        st.line_chart(sweep_df, height=270)
+        st.caption(
+            f"Threshold that maximises Dice on these tiles: **{_best_t:.2f}** "
+            f"(current sidebar value: {threshold:.2f})"
+        )
+    else:
+        st.info("Train the baseline model to see the threshold analysis.")
+
+    # ── U-Net architecture ────────────────────────────────────
+    st.markdown('<div class="ps-section">U-Net Architecture</div>', unsafe_allow_html=True)
+
+    unet_rows = [
+        {"Stage": "Input",       "Out channels": 3,    "Spatial": f"{H}×{W}",         "Block": "RGB tile"},
+        {"Stage": "Encoder 1",   "Out channels": 64,   "Spatial": f"{H}×{W}",         "Block": "DoubleConv (Conv2d 3×3 → BN → ReLU) ×2"},
+        {"Stage": "Down 1",      "Out channels": 64,   "Spatial": f"{H//2}×{W//2}",   "Block": "MaxPool2d(2)"},
+        {"Stage": "Encoder 2",   "Out channels": 128,  "Spatial": f"{H//2}×{W//2}",   "Block": "DoubleConv ×2"},
+        {"Stage": "Down 2",      "Out channels": 128,  "Spatial": f"{H//4}×{W//4}",   "Block": "MaxPool2d(2)"},
+        {"Stage": "Encoder 3",   "Out channels": 256,  "Spatial": f"{H//4}×{W//4}",   "Block": "DoubleConv ×2"},
+        {"Stage": "Down 3",      "Out channels": 256,  "Spatial": f"{H//8}×{W//8}",   "Block": "MaxPool2d(2)"},
+        {"Stage": "Encoder 4",   "Out channels": 512,  "Spatial": f"{H//8}×{W//8}",   "Block": "DoubleConv ×2"},
+        {"Stage": "Down 4",      "Out channels": 512,  "Spatial": f"{H//16}×{W//16}", "Block": "MaxPool2d(2)"},
+        {"Stage": "Bottleneck",  "Out channels": 1024, "Spatial": f"{H//16}×{W//16}", "Block": "DoubleConv ×2"},
+        {"Stage": "Up 4 + skip", "Out channels": 512,  "Spatial": f"{H//8}×{W//8}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
+        {"Stage": "Up 3 + skip", "Out channels": 256,  "Spatial": f"{H//4}×{W//4}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
+        {"Stage": "Up 2 + skip", "Out channels": 128,  "Spatial": f"{H//2}×{W//2}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
+        {"Stage": "Up 1 + skip", "Out channels": 64,   "Spatial": f"{H}×{W}",         "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
+        {"Stage": "Output",      "Out channels": 1,    "Spatial": f"{H}×{W}",         "Block": "Conv2d(1×1) → sigmoid → binary mask"},
+    ]
+    st.dataframe(pd.DataFrame(unet_rows), hide_index=True, use_container_width=True)
+    st.caption("Skip connections (cat) concatenate encoder feature maps with decoder input, preserving spatial detail.")
+
+    st.markdown("**Combined loss function:**")
+    st.latex(r"\mathcal{L} = \tfrac{1}{2}\,\mathcal{L}_{\mathrm{BCE}} + \tfrac{1}{2}\,\mathcal{L}_{\mathrm{Dice}}")
+    st.latex(
+        r"\mathcal{L}_{\mathrm{BCE}} = -\frac{1}{N}\sum_{i=1}^{N}"
+        r"\bigl[y_i \log p_i + (1-y_i)\log(1-p_i)\bigr]"
+    )
+    st.latex(
+        r"\mathcal{L}_{\mathrm{Dice}} = 1 - \frac{2\sum_i y_i\,p_i + \varepsilon}"
+        r"{\sum_i y_i + \sum_i p_i + \varepsilon}, \quad \varepsilon = 1"
+    )
+    st.markdown(
+        "BCE penalises each pixel independently. "
+        "Dice penalises the overlap directly — handles class imbalance better when foreground is rare."
+    )
+
+    if UNET_AVAILABLE:
+        history_path = Path(ROOT) / "models" / "unet_history.json"
+        history = _load_unet_history(str(history_path))
+        if history:
+            history_df = pd.DataFrame(history)
+            best_ep = max(history, key=lambda e: e["dice"])
+            st.markdown(
+                f"**Best checkpoint:** epoch {best_ep['epoch']} — "
+                f"Dice = `{best_ep['dice']:.4f}` | IoU = `{best_ep['iou']:.4f}` | "
+                f"val_loss = `{best_ep['val_loss']:.4f}`"
+            )
+            ht1, ht2, ht3 = st.tabs(["Dice / IoU", "Loss", "Learning rate"])
+            with ht1:
+                st.line_chart(history_df.set_index("epoch")[["dice", "iou"]], height=280)
+            with ht2:
+                st.line_chart(history_df.set_index("epoch")[["train_loss", "val_loss"]], height=280)
+            with ht3:
+                st.line_chart(history_df.set_index("epoch")[["lr"]], height=230)
+
+    # ── LR vs U-Net comparison ────────────────────────────────
+    st.markdown('<div class="ps-section">LR vs U-Net</div>', unsafe_allow_html=True)
+
+    cmp_df = pd.DataFrame([
+        {"":                    "Decision unit",    "Logistic Regression": "Single pixel",                    "U-Net": "Full image (receptive field = full tile)"},
+        {"":                    "Input features",   "Logistic Regression": "8 hand-crafted (color + position)", "U-Net": "Raw 3-channel RGB"},
+        {"":                    "Prediction",       "Logistic Regression": "σ(w·x + b) independently per px", "U-Net": "sigmoid(conv stack) — all pixels jointly"},
+        {"":                    "Spatial context",  "Logistic Regression": "None",                             "U-Net": "128×128 px receptive field via pooling"},
+        {"":                    "Parameters",       "Logistic Regression": "9  (8 weights + bias)",            "U-Net": "~31 M"},
+        {"":                    "Training time",    "Logistic Regression": "~2 s on CPU",                      "U-Net": "~5 min on GPU"},
+        {"":                    "Loss",             "Logistic Regression": "Weighted cross-entropy",           "U-Net": "BCE + Dice (50/50)"},
+        {"":                    "When it wins",     "Logistic Regression": "Strong color contrast btw classes","U-Net": "Complex morphology, texture, shape"},
+    ]).set_index("")
+    st.dataframe(cmp_df, use_container_width=True)
