@@ -1,0 +1,51 @@
+# PathSeg configuration
+# Override any value via environment variable PATHSEG__<section>__<key>
+
+data:
+  image_size: 128
+  n_synthetic: 160
+  synthetic_seed: 42
+  real_data_path: "data/raw/pathseg"
+  test_size: 0.25
+  val_size: 0.15  # fraction of training split
+  num_workers: 0  # 0 for Windows compat, >0 on Linux
+
+augmentation:
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rotate_limit: 30
+  color_jitter: 0.05
+  elastic_alpha: 20.0
+  elastic_sigma: 4.0
+
+baseline:
+  learning_rate: 0.28
+  epochs: 150
+  l2_reg: 0.002
+  max_pixels: 25000
+  random_seed: 11
+
+unet:
+  in_channels: 3
+  base_filters: 64
+  depth: 4
+  dropout: 0.1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  epochs: 100
+  batch_size: 16
+  val_batch_size: 32
+  random_seed: 42
+  early_stop_patience: 15
+  scheduler_factor: 0.5
+  scheduler_patience: 5
+
+training:
+  device: "cpu"          # "cuda" when GPU is available
+  log_interval: 10       # batches between log messages
+  checkpoint_dir: "models/checkpoints"
+  best_model_path: "models/unet_best.pt"
+
+logging:
+  level: "INFO"
+  file: "logs/training.log"
