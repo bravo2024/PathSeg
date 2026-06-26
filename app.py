@@ -676,12 +676,11 @@ with overview_tab:
         """
         PathSeg trains two segmentation models on H&E tissue tiles and lets you compare
         predictions side by side. The baseline uses per-pixel logistic regression on
-        hand-crafted color features — fast, interpretable, no GPU needed. The U-Net
-        learns spatial context and handles more complex tissue patterns.
+        hand-crafted colour features — fast and interpretable. The MLP uses a 2-layer
+        neural network on 3×3 patch features to capture local spatial context.
 
-        Both models work on synthetic tiles out of the box. Switch the data source in
-        the sidebar to load real data from a local folder, a Zenodo URL, or stream
-        directly from HuggingFace Hub.
+        Both models train inside the app. Switch the data source in the sidebar to
+        load real data from a local folder, a Zenodo URL, or stream from HuggingFace Hub.
         """
     )
 
@@ -689,16 +688,16 @@ with overview_tab:
     st.markdown(
         """
         1. Pick a data source and model in the sidebar
-        2. The model trains automatically (baseline ~2s on CPU, U-Net needs a pre-trained checkpoint)
-        3. Go to **Segment** to look at predictions on individual tiles
-        4. Go to **Results** to see aggregate metrics and the confusion matrix
+        2. Both models train automatically (baseline ~2s, MLP ~15s on CPU — no checkpoint needed)
+        3. Go to **Segment** to inspect predictions on individual tiles
+        4. Go to **Results** to see Dice, IoU, confusion matrix, and MLP training loss
         5. Upload your own image in **Segment** to run inference on any tile
         """
     )
 
     st.markdown('<div class="ps-section">Stats</div>', unsafe_allow_html=True)
     col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("Models", "Baseline + U-Net")
+    col_a.metric("Models", "LR + sklearn MLP")
     col_b.metric("Tile size", f"{W}\u00d7{H} px")
     col_c.metric("Metrics", "Dice, IoU, Sens, Spec")
     col_d.metric("Data sources", "4")
@@ -958,13 +957,16 @@ with segment_tab:
         st.image(truth_overlay, caption="Green overlay = ground-truth annotation", width="content")
 
     # --- Pixel-level stats for this tile ---
-    if show_truth and bl_mask is not None:
+    active_mask = bl_mask if bl_mask is not None else fcn_mask
+    active_label = "Baseline" if bl_mask is not None and not (use_fcn and fcn_mask is not None) else "MLP"
+    if show_truth and active_mask is not None:
         st.markdown('<div class="ps-section">Tile Pixel Statistics</div>', unsafe_allow_html=True)
-        tile_metrics = confusion_matrix_data(true_mask, bl_mask)
+        tile_metrics = confusion_matrix_data(true_mask, active_mask)
         tp, fp, fn, tn = tile_metrics["TP"], tile_metrics["FP"], tile_metrics["FN"], tile_metrics["TN"]
         sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
         dice = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+        st.caption(f"Computed on {active_label} predictions vs ground truth for this tile.")
         ts1, ts2, ts3, ts4, ts5, ts6 = st.columns(6)
         ts1.metric("Sensitivity", f"{sensitivity:.3f}")
         ts2.metric("Specificity", f"{specificity:.3f}")
@@ -972,6 +974,21 @@ with segment_tab:
         ts4.metric("TP", f"{tp:,}")
         ts5.metric("FP", f"{fp:,}")
         ts6.metric("FN", f"{fn:,}")
+
+        if compare and bl_mask is not None and fcn_mask is not None:
+            bl_tm = confusion_matrix_data(true_mask, bl_mask)
+            fcn_tm = confusion_matrix_data(true_mask, fcn_mask)
+            def _dice(m): tp=m["TP"]; fp=m["FP"]; fn=m["FN"]; return 2*tp/(2*tp+fp+fn) if 2*tp+fp+fn else 0.0
+            def _sens(m): tp=m["TP"]; fn=m["FN"]; return tp/(tp+fn) if tp+fn else 0.0
+            def _spec(m): tn=m["TN"]; fp=m["FP"]; return tn/(tn+fp) if tn+fp else 0.0
+            tile_cmp = pd.DataFrame({
+                "Metric": ["Dice", "Sensitivity", "Specificity", "TP", "FP", "FN"],
+                "Baseline": [f"{_dice(bl_tm):.3f}", f"{_sens(bl_tm):.3f}", f"{_spec(bl_tm):.3f}",
+                             f"{bl_tm['TP']:,}", f"{bl_tm['FP']:,}", f"{bl_tm['FN']:,}"],
+                "MLP":      [f"{_dice(fcn_tm):.3f}", f"{_sens(fcn_tm):.3f}", f"{_spec(fcn_tm):.3f}",
+                             f"{fcn_tm['TP']:,}", f"{fcn_tm['FP']:,}", f"{fcn_tm['FN']:,}"],
+            }).set_index("Metric")
+            st.dataframe(tile_cmp, use_container_width=True)
 
 # ============================================================
 # TAB 4 — Results
@@ -1037,7 +1054,7 @@ with results_tab:
             "in the sidebar to train and evaluate a model."
         )
 
-    # --- FCN metrics and training loss ---
+    # --- MLP metrics, confusion matrix, training loss ---
     if fcn_metrics:
         st.markdown('<div class="ps-section">MLP Results</div>', unsafe_allow_html=True)
         fm = fcn_metrics
@@ -1047,18 +1064,68 @@ with results_tab:
         f3.metric("Sensitivity", f"{fm['sensitivity']:.4f}")
         f4.metric("Specificity", f"{fm['specificity']:.4f}")
 
+        f5, f6, f7, f8 = st.columns(4)
+        f5.metric("Precision", f"{fm.get('precision', 0):.4f}")
+        f6.metric("Threshold", f"{fm['threshold']:.2f}")
+        f7.metric("Train Tiles", f"{fm['n_train_tiles']:,}")
+        f8.metric("Test Tiles", f"{fm['n_test_tiles']:,}")
+
+        st.markdown('<div class="ps-section">MLP Pixel-Level Confusion Matrix</div>', unsafe_allow_html=True)
+        fm_cm = {"TP": fm["tp_pixels"], "FP": fm["fp_pixels"],
+                 "FN": fm["fn_pixels"], "TN": fm["tn_pixels"]}
+        fm_cm_df = pd.DataFrame([
+            {"": "Predicted Positive", "Actual Positive": f"{fm_cm['TP']:,}", "Actual Negative": f"{fm_cm['FP']:,}"},
+            {"": "Predicted Negative", "Actual Positive": f"{fm_cm['FN']:,}", "Actual Negative": f"{fm_cm['TN']:,}"},
+        ])
+        st.dataframe(fm_cm_df, width="stretch", hide_index=True)
+        fm_total = sum(fm_cm.values())
+        st.caption(
+            f"Total pixels evaluated: {fm_total:,} | "
+            f"Accuracy: {(fm_cm['TP'] + fm_cm['TN']) / fm_total:.4f} | "
+            f"F1: {2 * fm.get('precision', 0) * fm['sensitivity'] / (fm.get('precision', 0) + fm['sensitivity'] + 1e-8):.4f}"
+        )
+
+        st.markdown('<div class="ps-section">MLP Training Summary</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            | Parameter | Value |
+            |---|---|
+            | Backend | {fm.get('backend', 'sklearn-mlp')} |
+            | Training tiles | {fm['n_train_tiles']:,} |
+            | Test tiles | {fm['n_test_tiles']:,} |
+            | Positive pixel rate | {fm['positive_pixel_rate']:.2%} |
+            | Decision threshold | {fm['threshold']:.2f} |
+            | Precision | {fm.get('precision', 0):.4f} |
+            | Dice coefficient | {fm['dice']:.4f} |
+            | IoU (Jaccard index) | {fm['iou']:.4f} |
+            | Sensitivity (recall) | {fm['sensitivity']:.4f} |
+            | Specificity | {fm['specificity']:.4f} |
+            """
+        )
+
     if _fcn_dict:
         st.markdown('<div class="ps-section">MLP Training Loss</div>', unsafe_allow_html=True)
-        loss_df = pd.DataFrame({
-            "train_loss": _fcn_dict["train_loss"],
-            "val_loss":   _fcn_dict["val_loss"],
-        })
-        loss_df.index.name = "epoch"
+        _loss_vals = _fcn_dict["train_loss"]
+        loss_df = pd.DataFrame({"train_loss": _loss_vals})
+        loss_df.index.name = "iteration"
         st.line_chart(loss_df, height=270)
         st.caption(
-            f"Epochs: {_fcn_dict['epochs']} | lr: {_fcn_dict['lr']} | "
+            f"Iterations: {len(_loss_vals)} | lr: {_fcn_dict['lr']} | "
             f"Train tiles: {_fcn_dict['n_train']} | Test tiles: {_fcn_dict['n_test']}"
         )
+
+    # --- Side-by-side comparison when both models are active ---
+    if baseline_metrics and fcn_metrics:
+        st.markdown('<div class="ps-section">Baseline vs MLP — Metric Comparison</div>', unsafe_allow_html=True)
+        cmp_metrics = ["dice", "iou", "sensitivity", "specificity", "precision"]
+        cmp_labels  = ["Dice", "IoU", "Sensitivity", "Specificity", "Precision"]
+        cmp_df = pd.DataFrame({
+            "Metric":   cmp_labels,
+            "Baseline (LR)": [baseline_metrics[m] for m in cmp_metrics],
+            "MLP":           [fcn_metrics[m]       for m in cmp_metrics],
+        }).set_index("Metric")
+        st.bar_chart(cmp_df, height=320)
+        st.dataframe(cmp_df.style.format("{:.4f}"), use_container_width=True)
 
 # ============================================================
 # TAB 5 — Models (technical)
