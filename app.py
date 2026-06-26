@@ -645,72 +645,37 @@ overview_tab, data_tab, segment_tab, results_tab, modelcard_tab, deploy_tab = st
 # ============================================================
 
 with overview_tab:
-    st.markdown('<div class="ps-section">Clinical Context</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ps-section">About</div>', unsafe_allow_html=True)
     st.markdown(
         """
-        Digital pathology generates gigapixel whole-slide images (WSIs) that require
-        automated tissue region segmentation for downstream analysis. Accurate foreground
-        segmentation is a prerequisite for cancer grading, biomarker quantification,
-        and treatment response assessment.
+        PathSeg trains two segmentation models on H&E tissue tiles and lets you compare
+        predictions side by side. The baseline uses per-pixel logistic regression on
+        hand-crafted color features — fast, interpretable, no GPU needed. The U-Net
+        learns spatial context and handles more complex tissue patterns.
 
-        PathSeg implements two complementary segmentation approaches within a single
-        interactive platform, enabling rapid comparison between classical pixel-level
-        methods and deep convolutional architectures.
+        Both models work on synthetic tiles out of the box. Switch the data source in
+        the sidebar to load real data from a local folder, a Zenodo URL, or stream
+        directly from HuggingFace Hub.
         """
     )
 
-    st.markdown('<div class="ps-section">Intended Use</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ps-section">How it works</div>', unsafe_allow_html=True)
     st.markdown(
         """
-        | Aspect | Detail |
-        |---|---|
-        | **Intended use** | Research and algorithm development for digital pathology |
-        | **Target users** | Computational pathology researchers, ML engineers, bioinformaticians |
-        | **Input** | H&E-stained tissue tile images (128 x 128 px) |
-        | **Output** | Binary segmentation masks with probability maps and uncertainty estimates |
-        | **Regulatory status** | Research use only — not for clinical diagnosis |
-        | **Data sources** | Synthetic H&E-like tiles, user-provided real data, MoNuSeg-compatible format |
+        1. Pick a data source and model in the sidebar
+        2. The model trains automatically (baseline ~2s on CPU, U-Net needs a pre-trained checkpoint)
+        3. Go to **Segment** to look at predictions on individual tiles
+        4. Go to **Results** to see aggregate metrics and the confusion matrix
+        5. Upload your own image in **Segment** to run inference on any tile
         """
     )
 
-    st.markdown('<div class="ps-section">Workflow</div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        1. **Data Ingestion** — Generate synthetic tiles or load real image-mask pairs from local filesystem
-        2. **Model Training** — Train baseline logistic regression or U-Net with configurable hyperparameters
-        3. **Threshold Tuning** — Adjust decision boundary to optimize sensitivity-specificity trade-off for clinical task
-        4. **Prediction Review** — Inspect per-tile masks, overlays, and probability maps with ground-truth comparison
-        5. **Uncertainty Assessment** — Examine entropy-based uncertainty maps to identify low-confidence regions
-        6. **External Validation** — Upload unseen images for inference and evaluate on held-out test data
-        7. **Documentation** — Generate model cards and export metrics for regulatory or publication use
-        """
-    )
-
-    st.markdown('<div class="ps-section">Platform Capabilities</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ps-section">Stats</div>', unsafe_allow_html=True)
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Models", "Baseline + U-Net")
-    col_b.metric("Tile Size", f"{W}\u00d7{H} px")
+    col_b.metric("Tile size", f"{W}\u00d7{H} px")
     col_c.metric("Metrics", "Dice, IoU, Sens, Spec")
-    col_d.metric("Data", "Synthetic or real")
-
-    col_e, col_f, col_g, col_h = st.columns(4)
-    col_e.metric("Loss", "BCE + Dice")
-    col_f.metric("Optimizer", "AdamW")
-    col_g.metric("Scheduling", "ReduceLROnPlateau")
-    col_h.metric("Early Stopping", "Patience=15")
-
-    st.markdown(
-        """
-        <div class="ps-disclaimer">
-        <strong>Regulatory Disclaimer:</strong> This platform is intended exclusively for research
-        and algorithm development. It has not been cleared or approved by the FDA or any regulatory
-        body. Model outputs must not be used for clinical diagnosis, treatment decisions, or patient
-        management without validation through an appropriate regulatory pathway. All predictions
-        require review by a qualified pathologist.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    col_d.metric("Data sources", "4")
 
 # ============================================================
 # TAB 2 — Data
@@ -944,9 +909,8 @@ with segment_tab:
     if proba_for_entropy is not None:
         with st.expander("Uncertainty Map (Pixel Entropy)", expanded=False):
             st.markdown(
-                "Pixel-wise entropy computed from predicted probabilities. "
-                "Brighter regions indicate higher model uncertainty — these areas "
-                "should be flagged for pathologist review in a clinical workflow."
+                "Pixel-wise entropy from predicted probabilities. "
+                "Brighter = higher uncertainty."
             )
             entropy_map = entropy_from_proba(proba_for_entropy)
             max_e = entropy_map.max()
@@ -1090,13 +1054,7 @@ with results_tab:
 with modelcard_tab:
     st.markdown('<div class="ps-section">Model Cards</div>', unsafe_allow_html=True)
 
-    st.markdown(
-        """
-        Model cards document architecture, training configuration, intended use, limitations,
-        and performance characteristics. Following Google's Model Cards framework for
-        transparent and reproducible ML documentation.
-        """
-    )
+    st.markdown("Architecture details, training config, and known limitations for each model.")
 
     # --- Baseline card ---
     with st.container():
@@ -1147,11 +1105,10 @@ with modelcard_tab:
                 - Cannot learn morphological or textural features
                 - Boundary precision limited by pixel-level independence
 
-                **Recommended Use Cases**
-                - Baseline comparison for deep learning models
-                - Sanity check for color-based separability
-                - Quick debugging of evaluation pipelines
-                - Resource-constrained environments
+                **Good for**
+                - Comparing against deep learning models
+                - Checking color-based separability quickly
+                - Debugging evaluation pipelines
                 """
             )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1206,11 +1163,9 @@ with modelcard_tab:
                 - Overfits on small synthetic datasets without augmentation
                 - Inference time ~50ms/tile on GPU, ~2s/tile on CPU
 
-                **Recommended Use Cases**
-                - Real pathology tissue segmentation tasks
+                **Good for**
+                - Real pathology tissue segmentation
                 - When spatial context and morphology matter
-                - Production-level segmentation pipelines
-                - Multi-site validation studies
                 """
             )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1233,14 +1188,7 @@ with modelcard_tab:
 # ============================================================
 
 with deploy_tab:
-    st.markdown('<div class="ps-section">Deployment Guide</div>', unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        PathSeg supports multiple deployment strategies depending on your infrastructure
-        and regulatory requirements.
-        """
-    )
+    st.markdown('<div class="ps-section">Deployment</div>', unsafe_allow_html=True)
 
     # --- Streamlit Cloud ---
     st.markdown("#### Streamlit Community Cloud (Recommended for Prototyping)")
@@ -1296,13 +1244,3 @@ with deploy_tab:
         """
     )
 
-    st.markdown(
-        """
-        <div class="ps-info">
-        <strong>Note:</strong> For clinical deployment, ensure compliance with your institution's
-        data governance policies, IRB requirements, and applicable regulations (HIPAA, GDPR, FDA 21 CFR Part 11).
-        This platform is intended for research use only.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
