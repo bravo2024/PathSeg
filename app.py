@@ -325,7 +325,7 @@ def train_hf_cached(hf_id: str, image_col: str, mask_col: str, split: str, thres
 
 
 # ---------------------------------------------------------------------------
-# FCN cache helpers  (st.cache_resource — Keras models can't be pickled)
+# MLP cache helpers  (st.cache_resource — sklearn models are large, skip pickling)
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner=False)
@@ -386,7 +386,7 @@ st.markdown(
     """
     <div class="ps-hero">
       <h1>PathSeg</h1>
-      <p>Computational Pathology Segmentation — Logistic Regression vs Keras FCN on H&amp;E Tiles</p>
+      <p>Computational Pathology Segmentation — Logistic Regression vs sklearn MLP on H&amp;E Tiles</p>
       <div style="margin-top: 0.6rem;">
         <span class="ps-badge">Research Use Only</span>
         <span class="ps-badge">HIPAA-Aligned</span>
@@ -406,8 +406,8 @@ with st.sidebar:
 
     model_choice = st.radio(
         "Model",
-        ["Baseline (pixel-LR)", "Keras FCN", "Compare both"],
-        help="Baseline: pixel logistic regression (~2s). FCN: 3-layer conv net, trains live on CPU (~15s).",
+        ["Baseline (pixel-LR)", "MLP (scikit-learn)", "Compare both"],
+        help="Baseline: pixel logistic regression (~2s). MLP: 2-layer neural net on 3x3 patch features, trains live on CPU (~15s).",
     )
 
     st.markdown("---")
@@ -545,7 +545,7 @@ with st.sidebar:
     st.caption(f"Session started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.caption("Python 3.11+ | TensorFlow | NumPy | Streamlit")
 
-use_fcn = model_choice == "Keras FCN"
+use_fcn = model_choice == "MLP (scikit-learn)"
 compare = model_choice == "Compare both"
 
 # ---------------------------------------------------------------------------
@@ -641,7 +641,7 @@ else:
     train_time = 0.0
 
 if use_fcn or compare:
-    with st.spinner("Training Keras FCN — 3-layer conv net, ~15s on CPU..."):
+    with st.spinner("Training MLP — 2-layer neural net on patch features, ~15s on CPU..."):
         t0_fcn = time.time()
         if data_source == "Local folder":
             _fcn_dict = train_fcn_real(real_data_folder, real_data_fmt)
@@ -893,8 +893,8 @@ with segment_tab:
             c_bl_mask.image(bl_mask * 255, caption="Baseline Mask", width="content")
             c_bl_ov.image(bl_overlay, caption="Baseline Overlay", width="content")
         if fcn_mask is not None:
-            c_fcn_mask.image(fcn_mask * 255, caption="FCN Mask", width="content")
-            c_fcn_ov.image(fcn_overlay, caption="FCN Overlay", width="content")
+            c_fcn_mask.image(fcn_mask * 255, caption="MLP Mask", width="content")
+            c_fcn_ov.image(fcn_overlay, caption="MLP Overlay", width="content")
     else:
         if bl_mask is not None:
             c_mask.image(bl_mask * 255, caption="Predicted Mask", width="content")
@@ -915,18 +915,18 @@ with segment_tab:
         metric_items.append(("Baseline Area", f"{mask_area(bl_mask):.1%}"))
         metric_items.append(("Baseline Mean Prob.", f"{float(bl_proba.mean()):.3f}"))
     if fcn_mask is not None:
-        metric_items.append(("FCN Area", f"{mask_area(fcn_mask):.1%}"))
-        metric_items.append(("FCN Mean Prob.", f"{float(fcn_proba.mean()):.3f}"))
+        metric_items.append(("MLP Area", f"{mask_area(fcn_mask):.1%}"))
+        metric_items.append(("MLP Mean Prob.", f"{float(fcn_proba.mean()):.3f}"))
     mcols = st.columns(len(metric_items))
     for col, (label, value) in zip(mcols, metric_items):
         col.metric(label, value)
 
     # --- Probability comparison ---
     if compare and bl_proba is not None and fcn_proba is not None:
-        with st.expander("Per-Pixel Probability Comparison (Baseline vs FCN)", expanded=False):
+        with st.expander("Per-Pixel Probability Comparison (Baseline vs MLP)", expanded=False):
             scatter_df = pd.DataFrame({
                 "Baseline Probability": bl_proba.ravel(),
-                "FCN Probability": fcn_proba.ravel(),
+                "MLP Probability": fcn_proba.ravel(),
             })
             st.scatter_chart(scatter_df.sample(min(2000, len(scatter_df))), height=320)
 
@@ -1039,16 +1039,16 @@ with results_tab:
 
     # --- FCN metrics and training loss ---
     if fcn_metrics:
-        st.markdown('<div class="ps-section">Keras FCN Results</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ps-section">MLP Results</div>', unsafe_allow_html=True)
         fm = fcn_metrics
         f1, f2, f3, f4 = st.columns(4)
-        f1.metric("Dice (FCN)", f"{fm['dice']:.4f}")
-        f2.metric("IoU (FCN)", f"{fm['iou']:.4f}")
+        f1.metric("Dice (MLP)", f"{fm['dice']:.4f}")
+        f2.metric("IoU (MLP)", f"{fm['iou']:.4f}")
         f3.metric("Sensitivity", f"{fm['sensitivity']:.4f}")
         f4.metric("Specificity", f"{fm['specificity']:.4f}")
 
     if _fcn_dict:
-        st.markdown('<div class="ps-section">FCN Training Loss</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ps-section">MLP Training Loss</div>', unsafe_allow_html=True)
         loss_df = pd.DataFrame({
             "train_loss": _fcn_dict["train_loss"],
             "val_loss":   _fcn_dict["val_loss"],
@@ -1190,76 +1190,68 @@ with models_tab:
     else:
         st.info("Train the baseline model to see the threshold analysis.")
 
-    # ── Keras FCN architecture ───────────────────────────────────
-    st.markdown('<div class="ps-section">Keras FCN Architecture</div>', unsafe_allow_html=True)
+    # ── sklearn MLP architecture ─────────────────────────────────
+    st.markdown('<div class="ps-section">MLP Architecture (scikit-learn)</div>', unsafe_allow_html=True)
 
     st.markdown(
-        "Three conv layers, all `padding='same'` — spatial size never changes. "
-        "No pooling, no skip connections. Receptive field grows with depth: "
-        "layer 1 = 3×3, layer 2 = 5×5, layer 3 (1×1) = 5×5."
+        "For each pixel, extract the 3×3 neighbourhood → 27-dimensional feature vector (3 channels × 9 pixels). "
+        "Feed through two hidden layers then a sigmoid output. "
+        "Training samples a fixed number of pixels per tile so it stays fast on CPU."
     )
 
-    fcn_rows = [
-        {"Layer": "Input",          "Filters": "—",  "Kernel": "—",   "Out shape": f"{H}×{W}×3",  "Operation": "Raw RGB uint8"},
-        {"Layer": "Rescaling",      "Filters": "—",  "Kernel": "—",   "Out shape": f"{H}×{W}×3",  "Operation": "÷255 → [0,1] float32"},
-        {"Layer": "Conv2D + ReLU",  "Filters": "16", "Kernel": "3×3", "Out shape": f"{H}×{W}×16", "Operation": "Learn 16 local filters"},
-        {"Layer": "Conv2D + ReLU",  "Filters": "32", "Kernel": "3×3", "Out shape": f"{H}×{W}×32", "Operation": "Learn 32 filters on top of layer 1"},
-        {"Layer": "Conv2D + sigmoid","Filters": "1", "Kernel": "1×1", "Out shape": f"{H}×{W}×1",  "Operation": "Collapse to 1 probability map"},
+    _F = 27   # 3 channels × 3×3 patch
+    mlp_rows = [
+        {"Layer": "Input",         "Units": f"{_F}",  "Activation": "—",       "Operation": "3×3 RGB patch, flattened & z-scored"},
+        {"Layer": "Dense 1",       "Units": "64",     "Activation": "ReLU",     "Operation": "Learn patch-level features"},
+        {"Layer": "Dense 2",       "Units": "32",     "Activation": "ReLU",     "Operation": "Combine features"},
+        {"Layer": "Output",        "Units": "1",      "Activation": "sigmoid",  "Operation": "Pixel foreground probability"},
     ]
-    st.dataframe(pd.DataFrame(fcn_rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(mlp_rows), hide_index=True, use_container_width=True)
 
     # Parameter count
-    _conv1_params = (3 * 3 * 3 * 16) + 16       # weights + bias
-    _conv2_params = (3 * 3 * 16 * 32) + 32
-    _conv3_params = (1 * 1 * 32 * 1) + 1
-    _total_params = _conv1_params + _conv2_params + _conv3_params
+    _d1_params = _F * 64 + 64
+    _d2_params = 64 * 32 + 32
+    _d3_params = 32 * 1  + 1
+    _total_params = _d1_params + _d2_params + _d3_params
     pc1, pc2, pc3, pc4 = st.columns(4)
-    pc1.metric("Conv layer 1", f"{_conv1_params:,} params")
-    pc2.metric("Conv layer 2", f"{_conv2_params:,} params")
-    pc3.metric("Conv layer 3", f"{_conv3_params:,} params")
-    pc4.metric("Total", f"{_total_params:,} params")
+    pc1.metric("Dense layer 1", f"{_d1_params:,} params")
+    pc2.metric("Dense layer 2", f"{_d2_params:,} params")
+    pc3.metric("Output layer",  f"{_d3_params:,} params")
+    pc4.metric("Total",         f"{_total_params:,} params")
 
-    st.markdown("**Forward pass for one pixel at row r, col c:**")
+    st.markdown("**Forward pass for one pixel (feature vector x ∈ ℝ²⁷):**")
+    st.latex(r"h^{(1)} = \text{ReLU}\!\left(W^{(1)} x + b^{(1)}\right), \quad W^{(1)} \in \mathbb{R}^{64 \times 27}")
+    st.latex(r"h^{(2)} = \text{ReLU}\!\left(W^{(2)} h^{(1)} + b^{(2)}\right), \quad W^{(2)} \in \mathbb{R}^{32 \times 64}")
     st.latex(
-        r"z^{(1)}_{r,c} = \text{ReLU}\!\left(\sum_{i,j,k} W^{(1)}_{i,j,k}\; x_{r+i,\,c+j,\,k} + b^{(1)}\right)"
-        r"\quad (i,j \in \{-1,0,1\},\; k \in \{R,G,B\})"
-    )
-    st.latex(
-        r"z^{(2)}_{r,c} = \text{ReLU}\!\left(\sum_{i,j,k} W^{(2)}_{i,j,k}\; z^{(1)}_{r+i,\,c+j,\,k} + b^{(2)}\right)"
-    )
-    st.latex(
-        r"p_{r,c} = \sigma\!\left(W^{(3)} \cdot z^{(2)}_{r,c} + b^{(3)}\right)"
-        r"= \frac{1}{1+e^{-(W^{(3)} \cdot z^{(2)}_{r,c} + b^{(3)})}}"
+        r"p = \sigma\!\left(w^{(3)\top} h^{(2)} + b^{(3)}\right)"
+        r"= \frac{1}{1 + e^{-(w^{(3)\top} h^{(2)} + b^{(3)})}}"
     )
 
-    st.markdown("**Loss — binary cross-entropy over all pixels:**")
+    st.markdown("**Loss — binary cross-entropy over sampled pixels:**")
     st.latex(
-        r"\mathcal{L} = -\frac{1}{H \cdot W \cdot N}\sum_{n,r,c}"
-        r"\bigl[y_{n,r,c}\log p_{n,r,c} + (1-y_{n,r,c})\log(1-p_{n,r,c})\bigr]"
+        r"\mathcal{L} = -\frac{1}{N}\sum_{i=1}^{N}"
+        r"\bigl[y_i \log p_i + (1-y_i)\log(1-p_i)\bigr]"
     )
-    st.markdown("Optimised with Adam (lr=1e-3). All weights updated via backprop through the chain rule.")
+    st.markdown("Optimised with L-BFGS or Adam (scikit-learn default). Weights updated via backprop.")
 
     if _fcn_dict:
         st.markdown("**Training loss for this session:**")
-        _loss_df = pd.DataFrame({
-            "train_loss": _fcn_dict["train_loss"],
-            "val_loss":   _fcn_dict["val_loss"],
-        })
-        _loss_df.index.name = "epoch"
+        _loss_df = pd.DataFrame({"train_loss": _fcn_dict["train_loss"]})
+        _loss_df.index.name = "iteration"
         st.line_chart(_loss_df, height=240)
 
-    # ── LR vs FCN comparison ──────────────────────────────────
-    st.markdown('<div class="ps-section">LR vs Keras FCN</div>', unsafe_allow_html=True)
+    # ── LR vs MLP comparison ──────────────────────────────────
+    st.markdown('<div class="ps-section">LR vs sklearn MLP</div>', unsafe_allow_html=True)
 
     cmp_df = pd.DataFrame([
-        {"":                "Decision unit",    "Logistic Regression": "Single pixel",                     "Keras FCN": "Pixel + 5×5 neighbourhood"},
-        {"":                "Input",            "Logistic Regression": "8 hand-crafted features",          "Keras FCN": "Raw 3-channel RGB"},
-        {"":                "Prediction",       "Logistic Regression": "σ(w·x + b) per pixel",            "Keras FCN": "σ(conv₃(conv₂(conv₁(x)))) per pixel"},
-        {"":                "Spatial context",  "Logistic Regression": "None — independent per pixel",    "Keras FCN": "5×5 px receptive field (stacked 3×3 convs)"},
-        {"":                "Parameters",       "Logistic Regression": "9 (8 weights + bias)",            "Keras FCN": f"{_total_params:,}"},
-        {"":                "Training time",    "Logistic Regression": "~2s on CPU",                      "Keras FCN": "~15s on CPU"},
-        {"":                "Loss",             "Logistic Regression": "Weighted cross-entropy",          "Keras FCN": "Binary cross-entropy (Adam)"},
-        {"":                "Feature learning", "Logistic Regression": "No — features are hand-coded",   "Keras FCN": "Yes — filters learned from data"},
-        {"":                "Works on Cloud",   "Logistic Regression": "Yes",                             "Keras FCN": "Yes — trains live, no checkpoint needed"},
+        {"":                "Decision unit",    "Logistic Regression": "Single pixel",                   "sklearn MLP": "Pixel + 3×3 neighbourhood"},
+        {"":                "Input features",   "Logistic Regression": "8 hand-crafted (colour stats)",  "sklearn MLP": "27-dim raw patch (3 ch × 9 px)"},
+        {"":                "Prediction",       "Logistic Regression": "σ(w·x + b)",                    "sklearn MLP": "σ(W³·ReLU(W²·ReLU(W¹x)))"},
+        {"":                "Spatial context",  "Logistic Regression": "None",                          "sklearn MLP": "3×3 px neighbourhood"},
+        {"":                "Parameters",       "Logistic Regression": "9 (8 weights + bias)",           "sklearn MLP": f"{_total_params:,}"},
+        {"":                "Training time",    "Logistic Regression": "~2s on CPU",                    "sklearn MLP": "~15s on CPU"},
+        {"":                "Loss",             "Logistic Regression": "Weighted cross-entropy",        "sklearn MLP": "Binary cross-entropy"},
+        {"":                "Feature learning", "Logistic Regression": "No — hand-coded",               "sklearn MLP": "Yes — learned from data"},
+        {"":                "Works on Cloud",   "Logistic Regression": "Yes",                           "sklearn MLP": "Yes — no TF/PyTorch needed"},
     ]).set_index("")
     st.dataframe(cmp_df, use_container_width=True)
