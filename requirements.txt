@@ -1,4 +1,4 @@
-# --- core (pinned) ---
+# --- core ---
 numpy>=1.26
 pillow>=10.0
 pandas>=2.0
@@ -7,9 +7,8 @@ pyyaml>=6.0
 requests>=2.28
 datasets>=2.14
 
-# --- deep learning (U-Net support) ---
-torch>=2.1
-torchvision>=0.16
+# --- deep learning ---
+tensorflow-cpu>=2.13
 
 # --- dev ---
 pytest>=8.0

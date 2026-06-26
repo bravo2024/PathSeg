@@ -1,10 +1,10 @@
 # PathSeg
 
-A Streamlit app for segmenting tissue tiles from digital pathology images. Trains two models — a simple pixel-level logistic regression baseline and a U-Net — then lets you compare predictions interactively.
+A Streamlit app for binary segmentation of H&E tissue tiles. Trains two models — a pixel-level logistic regression baseline and a small Keras FCN — then lets you compare predictions and metrics interactively.
 
-Built mostly to explore how far a hand-rolled baseline can get before needing deep learning on H&E stained tiles.
+Built to explore how far a hand-rolled baseline gets before a convolutional net is worth the extra complexity.
 
-![Python](https://img.shields.io/badge/python-3.11-blue) ![Streamlit](https://img.shields.io/badge/streamlit-1.30+-red) ![PyTorch](https://img.shields.io/badge/pytorch-2.1+-orange) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.11-blue) ![Streamlit](https://img.shields.io/badge/streamlit-1.30+-red) ![TensorFlow](https://img.shields.io/badge/tensorflow--cpu-2.13+-orange) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -16,7 +16,7 @@ cd PathSeg
 pip install -r requirements.txt
 ```
 
-No GPU needed to run the app — the baseline trains in a couple of seconds on CPU. U-Net training is faster with a GPU but runs on CPU too.
+No GPU needed — both models train on CPU. The Keras FCN takes ~15 s for 120 synthetic tiles.
 
 ---
 
@@ -26,15 +26,7 @@ No GPU needed to run the app — the baseline trains in a couple of seconds on C
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`. The sidebar lets you pick the model and data source.
-
-To pre-train models before opening the app:
-
-```bash
-python train.py                          # baseline
-python train.py --model unet             # U-Net (30 epochs default)
-python train.py --model unet --epochs 50 --lr 0.0005
-```
+Opens at `http://localhost:8501`. The sidebar picks the model and data source. Both models train inside the app — no pre-training step needed.
 
 ---
 
@@ -56,15 +48,12 @@ Three ways to load data from the sidebar:
 
 ```
 app.py          main Streamlit app
-train.py        CLI for training
 src/
-  data.py       loaders for synthetic, local, HF Hub, and URL datasets
-  model.py      baseline + U-Net inference
-  unet.py       U-Net architecture
-  core.py       logistic regression and metrics from scratch
-  transforms.py augmentation
+  data.py       loaders — synthetic, local folder, HF Hub, URL
+  model.py      logistic regression baseline
+  fcn.py        Keras FCN — build, train, evaluate, predict
+  core.py       metrics (Dice, IoU, sensitivity, specificity)
   config.py     YAML config loader
-  ...
 tests/          pytest suite
 config/
   base.yaml     default hyperparameters

@@ -30,15 +30,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data import H, W, detect_layout, load_hf_dataset, load_monuseg, load_real, load_url_dataset, make_synthetic
-from src.model import (
-    fit_and_evaluate,
-    overlay_mask,
-    predict_mask,
-    predict_mask_unet,
-    predict_proba,
-    predict_proba_unet,
-    unet_model_exists,
-)
+from src.fcn import evaluate_fcn, fit_fcn, predict_mask_fcn, predict_proba_fcn
+from src.model import fit_and_evaluate, overlay_mask, predict_mask, predict_proba
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -163,7 +156,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-UNET_AVAILABLE = unet_model_exists()
 
 # ---------------------------------------------------------------------------
 # Cache helpers
@@ -180,12 +172,6 @@ def train_cached(n_tiles: int, seed: int, tile_size: int, threshold: float) -> t
     return fit_and_evaluate(data, threshold=threshold)
 
 
-@st.cache_data(show_spinner=False)
-def _load_unet_history(path: str) -> list[dict]:
-    p = Path(path)
-    if not p.exists():
-        return []
-    return json.loads(p.read_text())
 
 
 @st.cache_data(show_spinner=False)
@@ -338,6 +324,34 @@ def train_hf_cached(hf_id: str, image_col: str, mask_col: str, split: str, thres
     return fit_and_evaluate(data, threshold=threshold)
 
 
+# ---------------------------------------------------------------------------
+# FCN cache helpers  (st.cache_resource — Keras models can't be pickled)
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def train_fcn_synthetic(n_tiles: int, seed: int) -> dict:
+    data = make_synthetic(n=n_tiles, seed=seed, size=H)
+    return fit_fcn(data)
+
+
+@st.cache_resource(show_spinner=False)
+def train_fcn_real(folder: str, fmt: str) -> dict:
+    data = load_monuseg(folder) if fmt == "monuseg" else load_real(folder)
+    return fit_fcn(data)
+
+
+@st.cache_resource(show_spinner=False)
+def train_fcn_url(cache_key: str, layout: str) -> dict:
+    data = load_url_dataset(str(DATASET_CACHE / cache_key), layout=layout)
+    return fit_fcn(data)
+
+
+@st.cache_resource(show_spinner=False)
+def train_fcn_hf(hf_id: str, image_col: str, mask_col: str, split: str) -> dict:
+    data = load_hf_dataset(hf_id, image_col=image_col, mask_col=mask_col, split=split)
+    return fit_fcn(data)
+
+
 def resize_uploaded_image(uploaded_file) -> np.ndarray:
     image = Image.open(uploaded_file).convert("RGB").resize((W, H))
     return np.asarray(image, dtype=np.uint8)
@@ -372,7 +386,7 @@ st.markdown(
     """
     <div class="ps-hero">
       <h1>PathSeg</h1>
-      <p>Computational Pathology Segmentation Platform — Baseline &amp; U-Net for Tissue Tile Analysis</p>
+      <p>Computational Pathology Segmentation — Logistic Regression vs Keras FCN on H&amp;E Tiles</p>
       <div style="margin-top: 0.6rem;">
         <span class="ps-badge">Research Use Only</span>
         <span class="ps-badge">HIPAA-Aligned</span>
@@ -392,8 +406,8 @@ with st.sidebar:
 
     model_choice = st.radio(
         "Model",
-        ["Baseline (pixel-LR)", "U-Net"] + (["Compare both"] if UNET_AVAILABLE else []),
-        help="Baseline trains on synthetic data on the fly. U-Net requires a pre-trained checkpoint.",
+        ["Baseline (pixel-LR)", "Keras FCN", "Compare both"],
+        help="Baseline: pixel logistic regression (~2s). FCN: 3-layer conv net, trains live on CPU (~15s).",
     )
 
     st.markdown("---")
@@ -524,20 +538,14 @@ with st.sidebar:
         help="Pixels with probability above this threshold are classified as foreground.",
     )
 
-    if "U-Net" in model_choice and not UNET_AVAILABLE:
-        st.warning("U-Net checkpoint not found. Run `python train.py --model unet` from terminal.")
-
     st.markdown("---")
     st.markdown("#### Quickstart")
-    st.code("python train.py --model baseline", language="bash")
-    st.code("python train.py --model unet", language="bash")
     st.code("streamlit run app.py", language="bash")
-
     st.markdown("---")
     st.caption(f"Session started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    st.caption("Python 3.11+ | PyTorch | NumPy | Streamlit")
+    st.caption("Python 3.11+ | TensorFlow | NumPy | Streamlit")
 
-use_unet = "U-Net" in model_choice and UNET_AVAILABLE
+use_fcn = model_choice == "Keras FCN"
 compare = model_choice == "Compare both"
 
 # ---------------------------------------------------------------------------
@@ -611,7 +619,7 @@ else:
         data = load_tiles(n_tiles, int(seed), H)
 
 if compare or model_choice == "Baseline (pixel-LR)":
-    with st.spinner("Training pixel-level logistic regression baseline..."):
+    with st.spinner("Training logistic regression baseline (~2s)..."):
         t0 = time.time()
         if data_source == "Local folder":
             baseline_model, baseline_metrics = train_on_real_cached(
@@ -619,7 +627,7 @@ if compare or model_choice == "Baseline (pixel-LR)":
             )
         elif data_source == "Download from URL":
             baseline_model, baseline_metrics = train_from_url_cached(
-                url_key, url_fmt, threshold  # url_fmt = layout
+                url_key, url_fmt, threshold
             )
         elif data_source == "HuggingFace Hub":
             baseline_model, baseline_metrics = train_hf_cached(
@@ -631,6 +639,24 @@ if compare or model_choice == "Baseline (pixel-LR)":
 else:
     baseline_model, baseline_metrics = None, None
     train_time = 0.0
+
+if use_fcn or compare:
+    with st.spinner("Training Keras FCN — 3-layer conv net, ~15s on CPU..."):
+        t0_fcn = time.time()
+        if data_source == "Local folder":
+            _fcn_dict = train_fcn_real(real_data_folder, real_data_fmt)
+        elif data_source == "Download from URL":
+            _fcn_dict = train_fcn_url(url_key, url_fmt)
+        elif data_source == "HuggingFace Hub":
+            _fcn_dict = train_fcn_hf(hf_id, hf_image_col, hf_mask_col, hf_split)
+        else:
+            _fcn_dict = train_fcn_synthetic(n_tiles, int(seed))
+        fcn_metrics = evaluate_fcn(_fcn_dict, threshold)
+        fcn_train_time = time.time() - t0_fcn
+else:
+    _fcn_dict = None
+    fcn_metrics = None
+    fcn_train_time = 0.0
 
 # ---------------------------------------------------------------------------
 # Tabs
@@ -843,16 +869,16 @@ with segment_tab:
     else:
         bl_mask = bl_proba = bl_overlay = None
 
-    if use_unet or compare:
-        unet_proba = predict_proba_unet(image)
-        unet_mask = (unet_proba >= threshold).astype(np.uint8)
-        unet_overlay = overlay_mask(image, unet_mask, color=(30, 200, 80), alpha=0.45)
+    if use_fcn or compare:
+        fcn_proba = predict_proba_fcn(_fcn_dict, image)
+        fcn_mask = (fcn_proba >= threshold).astype(np.uint8)
+        fcn_overlay = overlay_mask(image, fcn_mask, color=(30, 200, 80), alpha=0.45)
     else:
-        unet_mask = unet_proba = unet_overlay = None
+        fcn_mask = fcn_proba = fcn_overlay = None
 
     # --- Visual comparison ---
     if compare:
-        c_inp, c_gt, c_bl_mask, c_bl_ov, c_un_mask, c_un_ov = st.columns(6)
+        c_inp, c_gt, c_bl_mask, c_bl_ov, c_fcn_mask, c_fcn_ov = st.columns(6)
     else:
         c_inp, c_gt, c_mask, c_ov = st.columns(4)
 
@@ -866,16 +892,16 @@ with segment_tab:
         if bl_mask is not None:
             c_bl_mask.image(bl_mask * 255, caption="Baseline Mask", width="content")
             c_bl_ov.image(bl_overlay, caption="Baseline Overlay", width="content")
-        if unet_mask is not None:
-            c_un_mask.image(unet_mask * 255, caption="U-Net Mask", width="content")
-            c_un_ov.image(unet_overlay, caption="U-Net Overlay", width="content")
+        if fcn_mask is not None:
+            c_fcn_mask.image(fcn_mask * 255, caption="FCN Mask", width="content")
+            c_fcn_ov.image(fcn_overlay, caption="FCN Overlay", width="content")
     else:
         if bl_mask is not None:
             c_mask.image(bl_mask * 255, caption="Predicted Mask", width="content")
             c_ov.image(bl_overlay, caption="Overlay", width="content")
-        elif unet_mask is not None:
-            c_mask.image(unet_mask * 255, caption="Predicted Mask", width="content")
-            c_ov.image(unet_overlay, caption="Overlay", width="content")
+        elif fcn_mask is not None:
+            c_mask.image(fcn_mask * 255, caption="Predicted Mask", width="content")
+            c_ov.image(fcn_overlay, caption="Overlay", width="content")
 
     # --- Metrics row ---
     st.markdown('<div class="ps-section">Tile-Level Metrics</div>', unsafe_allow_html=True)
@@ -888,24 +914,24 @@ with segment_tab:
     if bl_mask is not None:
         metric_items.append(("Baseline Area", f"{mask_area(bl_mask):.1%}"))
         metric_items.append(("Baseline Mean Prob.", f"{float(bl_proba.mean()):.3f}"))
-    if unet_mask is not None:
-        metric_items.append(("U-Net Area", f"{mask_area(unet_mask):.1%}"))
-        metric_items.append(("U-Net Mean Prob.", f"{float(unet_proba.mean()):.3f}"))
+    if fcn_mask is not None:
+        metric_items.append(("FCN Area", f"{mask_area(fcn_mask):.1%}"))
+        metric_items.append(("FCN Mean Prob.", f"{float(fcn_proba.mean()):.3f}"))
     mcols = st.columns(len(metric_items))
     for col, (label, value) in zip(mcols, metric_items):
         col.metric(label, value)
 
     # --- Probability comparison ---
-    if compare and bl_proba is not None:
-        with st.expander("Per-Pixel Probability Comparison (Baseline vs U-Net)", expanded=False):
+    if compare and bl_proba is not None and fcn_proba is not None:
+        with st.expander("Per-Pixel Probability Comparison (Baseline vs FCN)", expanded=False):
             scatter_df = pd.DataFrame({
                 "Baseline Probability": bl_proba.ravel(),
-                "U-Net Probability": unet_proba.ravel(),
+                "FCN Probability": fcn_proba.ravel(),
             })
             st.scatter_chart(scatter_df.sample(min(2000, len(scatter_df))), height=320)
 
     # --- Uncertainty map ---
-    proba_for_entropy = unet_proba if unet_proba is not None else bl_proba
+    proba_for_entropy = fcn_proba if fcn_proba is not None else bl_proba
     if proba_for_entropy is not None:
         with st.expander("Uncertainty Map (Pixel Entropy)", expanded=False):
             st.markdown(
@@ -1011,40 +1037,27 @@ with results_tab:
             "in the sidebar to train and evaluate a model."
         )
 
-    # --- U-Net history ---
-    st.markdown('<div class="ps-section">U-Net Training History</div>', unsafe_allow_html=True)
+    # --- FCN metrics and training loss ---
+    if fcn_metrics:
+        st.markdown('<div class="ps-section">Keras FCN Results</div>', unsafe_allow_html=True)
+        fm = fcn_metrics
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("Dice (FCN)", f"{fm['dice']:.4f}")
+        f2.metric("IoU (FCN)", f"{fm['iou']:.4f}")
+        f3.metric("Sensitivity", f"{fm['sensitivity']:.4f}")
+        f4.metric("Specificity", f"{fm['specificity']:.4f}")
 
-    if UNET_AVAILABLE:
-        history_path = Path(ROOT) / "models" / "unet_history.json"
-        history = _load_unet_history(str(history_path))
-        if history:
-            history_df = pd.DataFrame(history)
-            best = max(history, key=lambda e: e["dice"])
-
-            st.markdown(
-                f"**Best validation epoch:** {best['epoch']} | "
-                f"Dice = {best['dice']:.4f} | IoU = {best['iou']:.4f} | "
-                f"val_loss = {best['val_loss']:.4f}"
-            )
-
-            chart_tabs = st.tabs(["Dice / IoU", "Loss", "Learning Rate", "Table"])
-            with chart_tabs[0]:
-                st.line_chart(history_df.set_index("epoch")[["dice", "iou"]], height=300)
-            with chart_tabs[1]:
-                st.line_chart(history_df.set_index("epoch")[["train_loss", "val_loss"]], height=300)
-            with chart_tabs[2]:
-                st.line_chart(history_df.set_index("epoch")[["lr"]], height=250)
-            with chart_tabs[3]:
-                st.dataframe(history_df, width="stretch", hide_index=True)
-        else:
-            st.markdown(
-                "U-Net checkpoint exists but no training history found at `models/unet_history.json`. "
-                "Re-run training to generate history."
-            )
-    else:
-        st.markdown(
-            "**U-Net not yet trained.** Execute `python train.py --model unet` from the terminal "
-            "to train the convolutional segmentation model."
+    if _fcn_dict:
+        st.markdown('<div class="ps-section">FCN Training Loss</div>', unsafe_allow_html=True)
+        loss_df = pd.DataFrame({
+            "train_loss": _fcn_dict["train_loss"],
+            "val_loss":   _fcn_dict["val_loss"],
+        })
+        loss_df.index.name = "epoch"
+        st.line_chart(loss_df, height=270)
+        st.caption(
+            f"Epochs: {_fcn_dict['epochs']} | lr: {_fcn_dict['lr']} | "
+            f"Train tiles: {_fcn_dict['n_train']} | Test tiles: {_fcn_dict['n_test']}"
         )
 
 # ============================================================
@@ -1177,74 +1190,76 @@ with models_tab:
     else:
         st.info("Train the baseline model to see the threshold analysis.")
 
-    # ── U-Net architecture ────────────────────────────────────
-    st.markdown('<div class="ps-section">U-Net Architecture</div>', unsafe_allow_html=True)
+    # ── Keras FCN architecture ───────────────────────────────────
+    st.markdown('<div class="ps-section">Keras FCN Architecture</div>', unsafe_allow_html=True)
 
-    unet_rows = [
-        {"Stage": "Input",       "Out channels": 3,    "Spatial": f"{H}×{W}",         "Block": "RGB tile"},
-        {"Stage": "Encoder 1",   "Out channels": 64,   "Spatial": f"{H}×{W}",         "Block": "DoubleConv (Conv2d 3×3 → BN → ReLU) ×2"},
-        {"Stage": "Down 1",      "Out channels": 64,   "Spatial": f"{H//2}×{W//2}",   "Block": "MaxPool2d(2)"},
-        {"Stage": "Encoder 2",   "Out channels": 128,  "Spatial": f"{H//2}×{W//2}",   "Block": "DoubleConv ×2"},
-        {"Stage": "Down 2",      "Out channels": 128,  "Spatial": f"{H//4}×{W//4}",   "Block": "MaxPool2d(2)"},
-        {"Stage": "Encoder 3",   "Out channels": 256,  "Spatial": f"{H//4}×{W//4}",   "Block": "DoubleConv ×2"},
-        {"Stage": "Down 3",      "Out channels": 256,  "Spatial": f"{H//8}×{W//8}",   "Block": "MaxPool2d(2)"},
-        {"Stage": "Encoder 4",   "Out channels": 512,  "Spatial": f"{H//8}×{W//8}",   "Block": "DoubleConv ×2"},
-        {"Stage": "Down 4",      "Out channels": 512,  "Spatial": f"{H//16}×{W//16}", "Block": "MaxPool2d(2)"},
-        {"Stage": "Bottleneck",  "Out channels": 1024, "Spatial": f"{H//16}×{W//16}", "Block": "DoubleConv ×2"},
-        {"Stage": "Up 4 + skip", "Out channels": 512,  "Spatial": f"{H//8}×{W//8}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
-        {"Stage": "Up 3 + skip", "Out channels": 256,  "Spatial": f"{H//4}×{W//4}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
-        {"Stage": "Up 2 + skip", "Out channels": 128,  "Spatial": f"{H//2}×{W//2}",   "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
-        {"Stage": "Up 1 + skip", "Out channels": 64,   "Spatial": f"{H}×{W}",         "Block": "ConvTranspose2d(2×2) → cat(skip) → DoubleConv"},
-        {"Stage": "Output",      "Out channels": 1,    "Spatial": f"{H}×{W}",         "Block": "Conv2d(1×1) → sigmoid → binary mask"},
-    ]
-    st.dataframe(pd.DataFrame(unet_rows), hide_index=True, use_container_width=True)
-    st.caption("Skip connections (cat) concatenate encoder feature maps with decoder input, preserving spatial detail.")
-
-    st.markdown("**Combined loss function:**")
-    st.latex(r"\mathcal{L} = \tfrac{1}{2}\,\mathcal{L}_{\mathrm{BCE}} + \tfrac{1}{2}\,\mathcal{L}_{\mathrm{Dice}}")
-    st.latex(
-        r"\mathcal{L}_{\mathrm{BCE}} = -\frac{1}{N}\sum_{i=1}^{N}"
-        r"\bigl[y_i \log p_i + (1-y_i)\log(1-p_i)\bigr]"
-    )
-    st.latex(
-        r"\mathcal{L}_{\mathrm{Dice}} = 1 - \frac{2\sum_i y_i\,p_i + \varepsilon}"
-        r"{\sum_i y_i + \sum_i p_i + \varepsilon}, \quad \varepsilon = 1"
-    )
     st.markdown(
-        "BCE penalises each pixel independently. "
-        "Dice penalises the overlap directly — handles class imbalance better when foreground is rare."
+        "Three conv layers, all `padding='same'` — spatial size never changes. "
+        "No pooling, no skip connections. Receptive field grows with depth: "
+        "layer 1 = 3×3, layer 2 = 5×5, layer 3 (1×1) = 5×5."
     )
 
-    if UNET_AVAILABLE:
-        history_path = Path(ROOT) / "models" / "unet_history.json"
-        history = _load_unet_history(str(history_path))
-        if history:
-            history_df = pd.DataFrame(history)
-            best_ep = max(history, key=lambda e: e["dice"])
-            st.markdown(
-                f"**Best checkpoint:** epoch {best_ep['epoch']} — "
-                f"Dice = `{best_ep['dice']:.4f}` | IoU = `{best_ep['iou']:.4f}` | "
-                f"val_loss = `{best_ep['val_loss']:.4f}`"
-            )
-            ht1, ht2, ht3 = st.tabs(["Dice / IoU", "Loss", "Learning rate"])
-            with ht1:
-                st.line_chart(history_df.set_index("epoch")[["dice", "iou"]], height=280)
-            with ht2:
-                st.line_chart(history_df.set_index("epoch")[["train_loss", "val_loss"]], height=280)
-            with ht3:
-                st.line_chart(history_df.set_index("epoch")[["lr"]], height=230)
+    fcn_rows = [
+        {"Layer": "Input",          "Filters": "—",  "Kernel": "—",   "Out shape": f"{H}×{W}×3",  "Operation": "Raw RGB uint8"},
+        {"Layer": "Rescaling",      "Filters": "—",  "Kernel": "—",   "Out shape": f"{H}×{W}×3",  "Operation": "÷255 → [0,1] float32"},
+        {"Layer": "Conv2D + ReLU",  "Filters": "16", "Kernel": "3×3", "Out shape": f"{H}×{W}×16", "Operation": "Learn 16 local filters"},
+        {"Layer": "Conv2D + ReLU",  "Filters": "32", "Kernel": "3×3", "Out shape": f"{H}×{W}×32", "Operation": "Learn 32 filters on top of layer 1"},
+        {"Layer": "Conv2D + sigmoid","Filters": "1", "Kernel": "1×1", "Out shape": f"{H}×{W}×1",  "Operation": "Collapse to 1 probability map"},
+    ]
+    st.dataframe(pd.DataFrame(fcn_rows), hide_index=True, use_container_width=True)
 
-    # ── LR vs U-Net comparison ────────────────────────────────
-    st.markdown('<div class="ps-section">LR vs U-Net</div>', unsafe_allow_html=True)
+    # Parameter count
+    _conv1_params = (3 * 3 * 3 * 16) + 16       # weights + bias
+    _conv2_params = (3 * 3 * 16 * 32) + 32
+    _conv3_params = (1 * 1 * 32 * 1) + 1
+    _total_params = _conv1_params + _conv2_params + _conv3_params
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    pc1.metric("Conv layer 1", f"{_conv1_params:,} params")
+    pc2.metric("Conv layer 2", f"{_conv2_params:,} params")
+    pc3.metric("Conv layer 3", f"{_conv3_params:,} params")
+    pc4.metric("Total", f"{_total_params:,} params")
+
+    st.markdown("**Forward pass for one pixel at row r, col c:**")
+    st.latex(
+        r"z^{(1)}_{r,c} = \text{ReLU}\!\left(\sum_{i,j,k} W^{(1)}_{i,j,k}\; x_{r+i,\,c+j,\,k} + b^{(1)}\right)"
+        r"\quad (i,j \in \{-1,0,1\},\; k \in \{R,G,B\})"
+    )
+    st.latex(
+        r"z^{(2)}_{r,c} = \text{ReLU}\!\left(\sum_{i,j,k} W^{(2)}_{i,j,k}\; z^{(1)}_{r+i,\,c+j,\,k} + b^{(2)}\right)"
+    )
+    st.latex(
+        r"p_{r,c} = \sigma\!\left(W^{(3)} \cdot z^{(2)}_{r,c} + b^{(3)}\right)"
+        r"= \frac{1}{1+e^{-(W^{(3)} \cdot z^{(2)}_{r,c} + b^{(3)})}}"
+    )
+
+    st.markdown("**Loss — binary cross-entropy over all pixels:**")
+    st.latex(
+        r"\mathcal{L} = -\frac{1}{H \cdot W \cdot N}\sum_{n,r,c}"
+        r"\bigl[y_{n,r,c}\log p_{n,r,c} + (1-y_{n,r,c})\log(1-p_{n,r,c})\bigr]"
+    )
+    st.markdown("Optimised with Adam (lr=1e-3). All weights updated via backprop through the chain rule.")
+
+    if _fcn_dict:
+        st.markdown("**Training loss for this session:**")
+        _loss_df = pd.DataFrame({
+            "train_loss": _fcn_dict["train_loss"],
+            "val_loss":   _fcn_dict["val_loss"],
+        })
+        _loss_df.index.name = "epoch"
+        st.line_chart(_loss_df, height=240)
+
+    # ── LR vs FCN comparison ──────────────────────────────────
+    st.markdown('<div class="ps-section">LR vs Keras FCN</div>', unsafe_allow_html=True)
 
     cmp_df = pd.DataFrame([
-        {"":                    "Decision unit",    "Logistic Regression": "Single pixel",                    "U-Net": "Full image (receptive field = full tile)"},
-        {"":                    "Input features",   "Logistic Regression": "8 hand-crafted (color + position)", "U-Net": "Raw 3-channel RGB"},
-        {"":                    "Prediction",       "Logistic Regression": "σ(w·x + b) independently per px", "U-Net": "sigmoid(conv stack) — all pixels jointly"},
-        {"":                    "Spatial context",  "Logistic Regression": "None",                             "U-Net": "128×128 px receptive field via pooling"},
-        {"":                    "Parameters",       "Logistic Regression": "9  (8 weights + bias)",            "U-Net": "~31 M"},
-        {"":                    "Training time",    "Logistic Regression": "~2 s on CPU",                      "U-Net": "~5 min on GPU"},
-        {"":                    "Loss",             "Logistic Regression": "Weighted cross-entropy",           "U-Net": "BCE + Dice (50/50)"},
-        {"":                    "When it wins",     "Logistic Regression": "Strong color contrast btw classes","U-Net": "Complex morphology, texture, shape"},
+        {"":                "Decision unit",    "Logistic Regression": "Single pixel",                     "Keras FCN": "Pixel + 5×5 neighbourhood"},
+        {"":                "Input",            "Logistic Regression": "8 hand-crafted features",          "Keras FCN": "Raw 3-channel RGB"},
+        {"":                "Prediction",       "Logistic Regression": "σ(w·x + b) per pixel",            "Keras FCN": "σ(conv₃(conv₂(conv₁(x)))) per pixel"},
+        {"":                "Spatial context",  "Logistic Regression": "None — independent per pixel",    "Keras FCN": "5×5 px receptive field (stacked 3×3 convs)"},
+        {"":                "Parameters",       "Logistic Regression": "9 (8 weights + bias)",            "Keras FCN": f"{_total_params:,}"},
+        {"":                "Training time",    "Logistic Regression": "~2s on CPU",                      "Keras FCN": "~15s on CPU"},
+        {"":                "Loss",             "Logistic Regression": "Weighted cross-entropy",          "Keras FCN": "Binary cross-entropy (Adam)"},
+        {"":                "Feature learning", "Logistic Regression": "No — features are hand-coded",   "Keras FCN": "Yes — filters learned from data"},
+        {"":                "Works on Cloud",   "Logistic Regression": "Yes",                             "Keras FCN": "Yes — trains live, no checkpoint needed"},
     ]).set_index("")
     st.dataframe(cmp_df, use_container_width=True)
