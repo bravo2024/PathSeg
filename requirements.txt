@@ -9,6 +9,9 @@ datasets>=2.14
 
 # --- ml ---
 scikit-learn>=1.3
+torch>=2.0
+torchvision>=0.15
+timm>=0.9
 
 # --- dev ---
 pytest>=8.0

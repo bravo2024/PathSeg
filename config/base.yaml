@@ -25,6 +25,9 @@ baseline:
   max_pixels: 25000
   random_seed: 11
 
+model_type: "unet"  # "unet" or "pvt_gdla"
+guidino_guidance: false
+
 unet:
   in_channels: 3
   base_filters: 64

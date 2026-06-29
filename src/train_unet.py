@@ -15,6 +15,8 @@ from torch.utils.data import DataLoader
 from src.config import get_config
 from src.logger import get_logger, setup_logger
 from src.unet import UNet, build_unet_from_config, combined_loss
+from src.decoders import build_model, PVTGDLA
+from src.guidance import GuidiNOGuidance
 
 
 def _segmentation_metrics_from_tensors(y_true: torch.Tensor, y_pred: torch.Tensor) -> dict[str, float]:
@@ -137,13 +139,19 @@ def train_unet(
     best_model_path: str = "models/unet_best.pt",
     seed: int = 42,
     logger_name: str = "unet",
+    model_type: str = "unet",
+    guidino_guidance: bool = False,
 ) -> dict[str, Any]:
     torch.manual_seed(seed)
     device_obj = torch.device(device)
     logger = get_logger(logger_name)
 
-    model = build_unet_from_config()
+    if model_type == "pvt_gdla":
+        model = build_model("pvt_gdla", in_channels=3, base_filters=64, depth=4, num_heads=4, out_channels=1)
+    else:
+        model = build_unet_from_config()
     model.to(device_obj)
+    guidance_module = GuidiNOGuidance() if guidino_guidance and device_obj.type == "cuda" else None
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay,
@@ -269,6 +277,8 @@ def train_unet_from_config(
         best_model_path=train_cfg.get("best_model_path", "models/unet_best.pt"),
         seed=unet_cfg.get("random_seed", 42),
         logger_name="unet",
+        model_type=cfg.get("model_type", "unet"),
+        guidino_guidance=cfg.get("guidino_guidance", False),
     )
 
 

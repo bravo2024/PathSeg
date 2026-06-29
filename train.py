@@ -30,7 +30,7 @@ from src.train_unet import save_unet_history, train_unet_from_config
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PathSeg model training")
-    parser.add_argument("--model", choices=["baseline", "unet"], default="baseline", help="Model type")
+    parser.add_argument("--model", choices=["baseline", "unet", "pvt_gdla"], default="baseline", help="Model type")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--real", type=str, default=None, help="Path to real data folder")
     parser.add_argument("--n", type=int, default=None, help="Number of synthetic tiles")
